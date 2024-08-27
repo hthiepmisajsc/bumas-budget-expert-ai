@@ -2,11 +2,13 @@ from openai import OpenAI
 from data_processing import process_data
 from utils.hierarchy_utils import assign_hierarchy_order
 import os
+import json
 
 # Sử dụng GPT để phân tích và xác định cột
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 
+# Xử lý dữ liệu ban đầu từ file Excel
 def analyze_and_identify_column(df):
     def analyze_column(description):
         response = client.chat.completions.create(
@@ -19,7 +21,6 @@ def analyze_and_identify_column(df):
                         "Nhiệm vụ của bạn là phân tích cột dữ liệu được cung cấp và xác định xem cột này có chứa tên các chỉ tiêu, nội dung dự toán, hoặc nhiệm vụ cụ thể trong dự toán chi thường xuyên của ngân sách nhà nước hay không.\n"
                         "Một cột phù hợp sẽ chứa các tên nhiệm vụ cụ thể hoặc mục chi tiêu liên quan trực tiếp đến các hoạt động thường xuyên của các cơ quan, tổ chức công lập.\n"
                         "Các nhiệm vụ chi thường xuyên bao gồm: giáo dục, y tế, an sinh xã hội, quốc phòng, an ninh, chi trả lương, chi phí hành chính, bảo dưỡng cơ sở vật chất, và các hoạt động khác cần thiết cho việc duy trì hoạt động bình thường của các cơ quan nhà nước.\n"
-                        "Lưu ý: Các cột chỉ chứa số liệu tổng hợp, mô tả chung hoặc không liên quan trực tiếp đến một nhiệm vụ cụ thể thì không phải là cột nhiệm vụ chi thường xuyên.\n"
                         "Hãy chỉ trả về tên của cột nếu bạn xác định đó là cột chứa nhiệm vụ chi thường xuyên, nếu không thì trả về 'false', và nếu cần thêm thông tin để xác định thì trả về 'none'."
                     ),
                 },
@@ -29,6 +30,10 @@ def analyze_and_identify_column(df):
                 },
             ],
             max_tokens=10,
+            temperature=0,
+            top_p=1,
+            frequency_penalty=0,
+            presence_penalty=0,
         )
         content = response.choices[0].message.content.strip()
         print(f'Phân tích cho cột "{description}": {content}')
@@ -54,93 +59,161 @@ def analyze_and_identify_column(df):
     return None
 
 
-def is_relevant_indicator(text):
+# Sử dụng GPT để xác định trọng số cho từng chỉ tiêu
+def calculate_relevance_score(text):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "Bạn là một chuyên gia phân tích dữ liệu và am hiểu về các nghiệp vụ lập dự toán chi thường xuyên ngân sách nhà nước Việt Nam. \n"
-                    "Nhiệm vụ của bạn là xác định liệu nội dung sau có phải là tên của một nhiệm vụ cụ thể trong dự toán chi thường xuyên hay không.\n "
-                    # "Lưu ý: Các danh mục rộng như 'Chi thường xuyên', 'Sự nghiệp giáo dục', hay 'CHI CÂN ĐỐI NGÂN SÁCH ĐỊA PHƯƠNG' không phải là tên nhiệm vụ cụ thể.\n"
-                    "Tên các địa phương hoặc các phòng ban như 'Trung tâm dạy nghề và giáo dục thường xuyên' cũng không phải là tên của nhiệm vụ cụ thể. \n"
-                    "Các nội dung mang tính chất tổng hợp số liệu, tính tổng, tính trung bình, tính phần trăm, không phải là tên nhiệm vụ cụ thể.\n"
-                    "Nhiệm vụ dự toán chi thường xuyên là các khoản chi tiêu của ngân sách nhà nước được lập và phê duyệt hàng năm, nhằm đảm bảo các hoạt động thường xuyên của các cơ quan, tổ chức, đơn vị công lập, cũng như các chương trình, dự án cần thiết để duy trì hoạt động bình thường của các cơ quan nhà nước, tổ chức chính trị, tổ chức chính trị - xã hội, và các đơn vị sự nghiệp công lập\n"
-                    "Nhiệm vụ chi thường xuyên thường bao gồm các chi phí liên quan đến giáo dục, y tế, an sinh xã hội, quốc phòng, an ninh, chi trả lương cho cán bộ, chi phí hành chính, bảo dưỡng cơ sở vật chất, và các chi phí văn phòng khác​\n"
-                    "Hãy đánh giá cẩn thận và chỉ trả lời bằng một con số từ 1 đến 10, trong đó:\n"
+                    "Bạn là một chuyên gia phân tích dữ liệu ngân sách.\n"
+                    "Nhiệm vụ của bạn là đánh giá xem liệu nội dung sau có phải là tên của một nhiệm vụ cụ thể trong dự toán chi thường xuyên hay không.\n"
+                    "Tên nhiệm vụ cụ thể là các khoản chi tiêu liên quan trực tiếp đến hoạt động thường xuyên của cơ quan nhà nước, tổ chức chính trị, tổ chức xã hội, hoặc các đơn vị công lập.\n"
+                    "Tên địa phương, phòng ban hoặc cột tính tổng hợp, tính toán trung bình không phải là tên nhiệm vụ cụ thể.\n "
+                    "Nếu chỉ tiêu nào không rõ ràng, hãy thêm vào sự hiểu biết của bạn để dự đoán xem nó có phải là tên nhiệm vụ cụ thể hay không.\n"
+                    "Hãy suy nghĩ và đánh giá cẩn thận và chỉ trả lời bằng một con số từ 1 đến 10, trong đó:\n"
                     "1 - Chắc chắn không phải là tên nhiệm vụ cụ thể.\n"
                     "10 - Chắc chắn là tên của một nhiệm vụ cụ thể."
                 ),
             },
             {
                 "role": "user",
-                "content": (f'Nội dung: "{text}"\n\n'),
+                "content": (f"{text}\n\n"),
             },
         ],
-        max_tokens=15,
+        max_tokens=1,
+        temperature=0,
+        top_p=1,
+        frequency_penalty=0,
+        presence_penalty=0,
     )
     content = response.choices[0].message.content.strip()
     print(f"Xác định trọng số cho: {text} => {content}")
     return int(content)
 
 
-def sub_kind_item_mapping(text):
+def is_relevant_task(text):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "Bạn là một chuyên gia phân tích dữ liệu và am hiểu về các nghiệp vụ lập dự toán chi thường xuyên ngân sách nhà nước Việt Nam. \n"
-                    "Nhiệm vụ của bạn là xác định liệu nội dung sau thuộc khoản nào trong mục lục ngân sách nhà nước\n "
-                    "Nếu tên nhiệm vụ có chứa 'Mầm non', 'Mẫu giáo', '24 tháng đến 36 tháng', hoặc nó phục vụ cho cấp mầm non, mẫu giáo thì thuộc khoản '071'\n"
-                    "Nếu tên nhiệm vụ thuộc nghị quyết số '29/2020/NQ' ngày '04/12/2020', Nghị định số '81/2021/NĐ' ngày '27/8/2021', Nghị định số '57/2017/NĐ' ngày '09/5/2017', Thông tư số '42/2013/TTLT', Nghị quyết số '28/2020/NQ' ngày '04/12/2020', Nghị định số '28/2012/NĐ' ngày '10/4/2012' thì thuộc khoản '071', '072', '073', '074', '075'\n"
-                    "Nếu tên nhiệm vụ thuộc Nghị định '105/2020/NĐ' ngày '08/9/2020', Nghị quyết số '23/2022/NQ' ngày '07/12/2022' thuộc khoản '071' \n"
-                    "Nếu tên nhiệm vụ thuộc Nghị quyết số '8/2022/NQ' ngày '15/7/2022' thì thuộc khoản '074', '075' \n"
-                    "Nếu tên nhiệm vụ thuộc Nghị quyết số '09/2022/NQ' ngày '15/7/2022' thì thuộc khoản '071', '072', '073' \n"
-                    "Nếu tên nhiệm vụ thuộc nghị định '116/2016/NĐ-CP' ngày '18/7/2016' thì thuộc khoản '072', '073', '074' \n"
-                    "Nếu tên nhiệm vụ có chứa 'tiểu học' hoặc nó mục đích phục vụ cho cấp tiểu học thì thuộc khoản '072'\n"
-                    "Nếu tên nhiệm vụ có chứa 'trung học', 'THCS' hoặc nó mục đích phục vụ cho cấp trung học thì thuộc khoản '073'\n"
-                    "Nếu tên nhiệm vụ có chứa 'trung cấp', 'nghề', 'trung cấp nghề' hoặc nó mục đích phục vụ cho cấp trung cấp nghề thì thuộc khoản '075'\n"
-                    "Các khoản chi cho giáo dục là '071', '072', '073', '074', '075' trong đó: \n"
-                    "Khoản chi cho y tế là '072' trong đó\n"
-                    "Khoản Chi cho văn hóa, thông tin, thể thao là '073' trong đó\n"
-                    "Khoản chi cho khoa học và công nghệ là '074' trong đó\n"
-                    "Khoản chi cho Hoạt động Kinh tế là '075' trong đó\n"
-                    "Quốc phòng và An ninh là '076', '077' trong đó\n"
-                    "Chi Bảo đảm Xã hội là khoản '080' trong đó\n"
-                    "Chi cho Quản lý Hành chính Nhà nước là khoản '090' trong đó\n"
-                    "Chi khác là khoản '100' trong đó\n"
-                    "Chi sự nghiệp xã hội là khoản '081' trong đó\n"
-                    "Chi sự nghiệp môi trường là khoản '082' trong đó\n"
-                    "Chi cho các hoạt động kinh tế khác là khoản '083' trong đó\n"
-                    "Chi dự trữ quốc gia là khoản '084' trong đó\n"
-                    "Chi trả nợ và viện trợ là khoản '085' trong đó\n"
-                    "Nếu nhiệm vụ không xác định được cụ thể mà xác định được thuộc lĩnh vực nào như 'giáo dục', 'quốc phòng', ... thì điền tất cả các khoản thuộc lĩnh vực đó cho nhiệm vụ này"
-                    "\nNếu không thể xác định chính xác, hãy trả về 'none'. "
-                    "Mỗi nhiệm vụ có thể áp dụng nhiều khoản."
-                    "\nHãy đánh giá cẩn thận và chỉ trả về mã khoản phù hợp với nhiệm vụ ví dụ:\n"
-                    "071, 072, 073\n"
-                    "071"
+                    "Bạn là một chuyên gia phân tích dữ liệu ngân sách. "
+                    "Nhiệm vụ của bạn là đánh giá xem liệu nội dung sau có phải là tên của một nhiệm vụ cụ thể trong dự toán chi thường xuyên hay không. "
+                    "Tên nhiệm vụ cụ thể là các khoản chi tiêu liên quan trực tiếp đến hoạt động thường xuyên của cơ quan nhà nước, tổ chức chính trị, tổ chức xã hội, hoặc các đơn vị công lập.\n"
+                    "Tên địa phương, phòng ban hoặc cột tính tổng hợp, tính toán trung bình không phải là tên nhiệm vụ cụ thể.\n "
+                    "Các nội dung liên quan đến 'nguồn thu', 'cân đối vào chi thường xuyên', hoặc các hoạt động tổng hợp, tính toán sẽ không phải là nhiệm vụ cụ thể.\n"
+                    "Chỉ trả lời 'Có' nếu nội dung là nhiệm vụ cụ thể, và 'Không' nếu không phải."
                 ),
             },
             {
                 "role": "user",
-                "content": (f'Nhiệm vụ: "{text}"\n\n'),
+                "content": f'Nội dung: "{text}"\n\n',
+            },
+        ],
+        max_tokens=3,
+        temperature=0.0,
+        top_p=1.0,
+        frequency_penalty=0,
+        presence_penalty=0,
+    )
+    content = response.choices[0].message.content.strip().lower()
+    print(f"Xác định nhiệm vụ cho: {text} => {content}")
+    return content == "có"
+
+
+def calculate_relevance_score_2(text):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Bạn là một chuyên gia phân tích ngân sách.\n"
+                    "Nhiệm vụ của bạn là đánh giá xem liệu nội dung sau có phải là tên của một nhiệm vụ cụ thể trong dự toán chi thường xuyên hay không.\n "
+                    "Hãy giải thích lý do ngắn gọn nhất tại sao nội dung này có thể hoặc không phải là một nhiệm vụ chi thường xuyên\n"
+                    "Sau đó đánh giá con số từ 1 đến 10, trong đó 1 là 'Không phải nhiệm vụ cụ thể', và 10 là 'Chắc chắn là nhiệm vụ cụ thể'.\n"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f'Nội dung: "{text}" return a JSON with "explanation" and "score"\n\n',
+            },
+        ],
+        max_tokens=150,
+        temperature=0.0,
+        top_p=1.0,
+        frequency_penalty=0,
+        presence_penalty=0,
+        response_format={"type": "json_object"},
+    )
+    try:
+        content = json.loads(response.choices[0].message.content.strip())
+        explanation = content.get("explanation", "No explanation provided.")
+        score = content.get("score", -1)
+    except json.JSONDecodeError:
+        explanation = "Unable to parse explanation."
+        score = -1
+    print(f"Kết quả: {text} => {explanation} score: {score}")
+    return score
+
+
+# Mapping khoản lĩnh vực giáo dục cho từng nhiệm vụ chi thường xuyên
+def sub_kind_item_education_mapping(text):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Bạn là một chuyên gia về lập dự toán chi thường xuyên ngân sách nhà nước Việt Nam. "
+                    "Nhiệm vụ của bạn là xác định liệu nội dung sau thuộc khoản nào trong mục lục ngân sách nhà nước dựa trên các quy tắc sau:\n"
+                    "- 'Mầm non', 'Mẫu giáo', '24 tháng đến 36 tháng', hoặc các nhiệm vụ phục vụ cấp mầm non, mẫu giáo: chỉ dùng khoản '071'.\n"
+                    "- 'Tiểu học': chỉ dùng khoản '072'.\n"
+                    "- 'Trung học', 'THCS': chỉ dùng khoản '073'.\n"
+                    "- 'Trung cấp', 'Nghề', 'Trung cấp nghề': chỉ dùng khoản '075'.\n"
+                    "- Nhiệm vụ chứa nghị quyết, nghị định, thông tư số '29/2020/NQ' ngày '04/12/2020', '81/2021/NĐ' ngày '27/8/2021', '57/2017/NĐ' ngày '09/5/2017', '42/2013/TTLT', '28/2020/NQ' ngày '04/12/2020', '28/2012/NĐ' ngày '10/4/2012': Khoản '071, 072, 073, 074, 075'\n"
+                    "- Nhiệm vụ chứa nghị định, nghị quyết số '105/2020/NĐ' ngày '08/9/2020','23/2022/NQ' ngày '07/12/2022': Khoản '071' \n"
+                    "- Nhiệm vụ chứa nghị quyết số '8/2022/NQ ngày 15/7/2022': Khoản '074, 075' \n"
+                    "- Nhiệm vụ chứa nghị quyết số '09/2022/NQ ngày 15/7/2022': Khoản '071, 072, 073' \n"
+                    "- Nhiệm vụ chứa nghị định '116/2016/NĐ-CP ngày 18/7/2016': Khoản '072, 073, 074' \n"
+                    "Nếu không xác định được cụ thể, trả về tất cả các khoản '071, '072, 073', 074', 075'.\n"
+                    "Chỉ trả về mã số các khoản như '071, 072, 073'. Không trả về bất kỳ văn bản nào khác."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (f"{text}"),
             },
         ],
         max_tokens=15,
+        temperature=0,
+        top_p=1,
+        frequency_penalty=0,
+        presence_penalty=0,
     )
     content = response.choices[0].message.content.strip()
     print(f"Xác định khoản cho: {text} => {content}")
     return content
 
 
-def filter_rows(df, keep_parent=False):
+# Lọc dữ liệu dựa trên trọng số > 7
+def filter_rows(df, min_score=7, keep_parent=False):
     keep_rows = set()
     for index, row in df.iterrows():
-        if row["indicator"] >= 7:
+
+        if (
+            sum(
+                [
+                    row["score"] >= min_score,
+                    row["is_task"] == True,
+                    row["score_2"] >= min_score,
+                ]
+            )
+            >= 2
+        ):
             # Giữ lại dòng này
             keep_rows.add(index)
             # Giữ lại tất cả các dòng cha
@@ -166,19 +239,32 @@ if __name__ == "__main__":
     combined_data_cleaned = assign_hierarchy_order(combined_data_cleaned)
 
     # Phân tích và xác định cột nội dung nhiệm vụ
-    identified_column = analyze_and_identify_column(combined_data_cleaned)
+    columns_lower = [col.lower() for col in combined_data_cleaned.columns]
+    if "nhiệm vụ" in columns_lower:
+        identified_column = combined_data_cleaned.columns[columns_lower.index("nhiệm vụ")]
+    elif "nhiệm vụ chi thường xuyên" in columns_lower:
+        identified_column = combined_data_cleaned.columns[columns_lower.index("nhiệm vụ chi thường xuyên")]
+    elif "chỉ tiêu" in columns_lower:
+        identified_column = combined_data_cleaned.columns[columns_lower.index("chỉ tiêu")]
+    elif "nội dung" in columns_lower:
+        identified_column = combined_data_cleaned.columns[columns_lower.index("nội dung")]
+    else:
+        identified_column = analyze_and_identify_column(combined_data_cleaned)
 
     if identified_column:
         print(f"Đã xác định được cột cần xử lý: {identified_column}")
 
-        # Sử dụng AI để xác định nhiệm vụ chi thường xuyên đánh trọng số và thêm cột "indicator"
-        combined_data_cleaned["indicator"] = combined_data_cleaned[
-            identified_column
-        ].apply(is_relevant_indicator)
+        # Sử dụng AI để xác định nhiệm vụ chi thường xuyên đánh trọng số và thêm cột "score"
+        combined_data_cleaned["score"] = combined_data_cleaned[identified_column].apply(
+            calculate_relevance_score
+        )
 
         # Mapping khoản
+        print(
+            "\n\n\nMapping khoản lĩnh vực giáo dục cho từng nhiệm vụ chi thường xuyên"
+        )
         combined_data_cleaned["Khoản"] = combined_data_cleaned[identified_column].apply(
-            sub_kind_item_mapping
+            sub_kind_item_education_mapping
         )
 
         filtered_data = filter_rows(combined_data_cleaned)
