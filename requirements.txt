@@ -1,2 +1,15 @@
+flask[async]
+gunicorn[gthread]
+Flask-CORS
+opencv-python-headless
+numpy
 pandas
+camelot-py[cv]
+scipy
+openpyxl
 openai
+redis
+PyPDF2==2.10.5
+pytesseract
+Pillow
+pymongo

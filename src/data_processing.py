@@ -2,7 +2,6 @@ import pandas as pd
 import os
 import glob
 
-
 # Hàm xử lý dữ liệu từ Excel
 def process_excel_files(folder_path):
     # Sử dụng glob để lấy tất cả các file xls, xlsx trong thư mục

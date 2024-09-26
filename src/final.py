@@ -3,8 +3,6 @@ import os
 from ai_analysis import (
     analyze_and_identify_column,
     calculate_relevance_score,
-    calculate_relevance_score_2,
-    is_relevant_task,
     filter_rows,
     sub_kind_item_education_mapping,
 )
@@ -58,13 +56,13 @@ def final(folder_path):
             calculate_relevance_score
         )
 
-        combined_data_cleaned["is_task"] = combined_data_cleaned[
-            identified_column
-        ].apply(is_relevant_task)
+        # combined_data_cleaned["is_task"] = combined_data_cleaned[
+        #     identified_column
+        # ].apply(is_relevant_task)
 
-        combined_data_cleaned["score_2"] = combined_data_cleaned[
-            identified_column
-        ].apply(calculate_relevance_score_2)
+        # combined_data_cleaned["score_2"] = combined_data_cleaned[
+        #     identified_column
+        # ].apply(calculate_relevance_score_2)
 
         # 5. Lọc dữ liệu dựa trên trọng số
         filtered_data = filter_rows(combined_data_cleaned)

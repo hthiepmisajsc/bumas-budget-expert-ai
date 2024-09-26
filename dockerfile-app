@@ -1,0 +1,34 @@
+# Sử dụng Python base image
+FROM python:3.9-slim
+
+# Đặt thư mục làm việc trong container
+WORKDIR /app
+
+# Cài đặt các gói hệ thống cần thiết bao gồm Tesseract và ngôn ngữ tiếng Việt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
+    tesseract-ocr-vie \
+    ghostscript \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgl1-mesa-glx \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Sao chép file requirements.txt để cài đặt các thư viện phụ thuộc
+COPY requirements.txt requirements.txt
+
+# Cài đặt các thư viện cần thiết
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Sao chép mã nguồn của ứng dụng vào container
+COPY ./src/app.py ./src/ai_analysis.py ./src/predict.py ./src/process_and_analyze_data.py gunicorn_config.py ./src/mongo_handler.py  .
+
+# Mở port 5000 để Flask có thể truy cập
+EXPOSE 5000
+
+# Lệnh để chạy Flask khi container khởi động
+CMD ["gunicorn", "-c", "gunicorn_config.py", "app:app"]
