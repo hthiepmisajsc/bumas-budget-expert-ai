@@ -9,14 +9,14 @@ from process_and_analyze_data import process_files_and_analyze_data
 import os
 from functools import wraps
 
-from mongo_handler import store_task_data
+from mongo_db_client import MongoDBClient
 
 app = Flask(__name__)
 CORS(app)
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=int(os.getenv("LOG_LEVEL", logging.ERROR)), format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,20 @@ def api_key_required(f):
     return decorated_function
 
 
+# @app.before_request
+# def startup_db_client():
+#     global mongo_client
+#     mongo_client = MongoDBClient()
+#     mongo_client.connect()
+#     app.logger.info("MongoDB connection established.")
+
+# @app.after_request
+# def close_db_client(response):
+#     mongo_client.close()
+#     app.logger.info("MongoDB connection closed.")
+#     return response
+
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify(create_result("error", message="Endpoint not found")), 404
@@ -163,7 +177,7 @@ def analysis():
             )
 
         all_results, errors = process_files_and_analyze_data(files)
-   
+
         if not all_results and errors:
             if errors:
                 logger.error(f"No task data found. Errors: {errors}")
@@ -188,17 +202,16 @@ def analysis():
         session_key = str(uuid.uuid4())
         update_cached_tasks(session_key, all_results)
         # insert data to turning
-        store_task_data(all_results)
-        
-        logger.debug(f"Session key {session_key} generated and tasks cached.")
+        insert_task_data(all_results)
 
+        logger.debug(f"Session key {session_key} generated and tasks cached.")
         return (
             jsonify(
                 create_result(
                     "success",
                     data={
                         "session_key": session_key,
-                        "tasks": remove_duplicate_tasks(all_results),
+                        "tasks": all_results,
                         "errors": errors or None,
                     },
                     message=(
@@ -251,17 +264,17 @@ def analysis_hierarchy(key):
             )
 
         # del_cached_tasks(key)
-        
+
         # insert data to turning
-        store_task_data(processed_tasks)
-        
+        update_task_data(processed_tasks, ["parent"], ["score"])
+
         return (
             jsonify(
                 create_result(
                     "success",
                     data={
                         "session_key": key,
-                        "tasks": remove_duplicate_tasks(processed_tasks),
+                        "tasks": processed_tasks,
                     },
                 )
             ),
@@ -295,16 +308,17 @@ def analysis_sub_kind_item_endpoint():
         # sources = data.get("sources", [])
 
         try:
+            sub_kind_item_name = sub_kind_items.get("name", "[]")
+            source_name = sources.get("name", "[]")
             processed_tasks = estimate_data_predict(
                 tasks,
-                sub_kind_items.get("name", []),
-                sources.get("name", []),
+                json.loads(sub_kind_item_name),
+                json.loads(source_name),
                 sub_kind_items.get("info", []),
             )
-            
+
             # insert data to turning
-            store_task_data(processed_tasks)
-        
+            update_task_data(processed_tasks, ["source", "sub_kind_item"], ["parent"])
             # processed_tasks = estimate_data_predict(
             #     tasks,
             #     sub_kind_items,
@@ -323,7 +337,7 @@ def analysis_sub_kind_item_endpoint():
                 create_result(
                     "success",
                     data={
-                        "tasks": remove_duplicate_tasks(processed_tasks),
+                        "tasks": processed_tasks,
                     },
                 )
             ),
@@ -338,6 +352,30 @@ def analysis_sub_kind_item_endpoint():
             ),
             500,
         )
+
+
+def insert_task_data(tasks):
+    # return True
+    try:
+        mongo_client = MongoDBClient()
+        mongo_client.connect()
+        mongo_client.insert_task_data(tasks)
+    except Exception as e:
+        logger.exception("Error storing task data to MongoDB.")
+    finally:
+        mongo_client.close()
+
+
+def update_task_data(tasks, update_fields, correction_fields=None):
+    # return True
+    try:
+        mongo_client = MongoDBClient()
+        mongo_client.connect()
+        mongo_client.update_task_data(tasks, update_fields, correction_fields)
+    except Exception as e:
+        logger.exception("Error updating task data in MongoDB.")
+    finally:
+        mongo_client.close()
 
 
 if __name__ == "__main__":

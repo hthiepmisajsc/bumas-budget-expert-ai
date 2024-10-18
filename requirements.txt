@@ -13,3 +13,5 @@ PyPDF2==2.10.5
 pytesseract
 Pillow
 pymongo
+gevent
+transformers

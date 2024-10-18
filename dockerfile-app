@@ -25,7 +25,7 @@ COPY requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Sao chép mã nguồn của ứng dụng vào container
-COPY ./src/app.py ./src/ai_analysis.py ./src/predict.py ./src/process_and_analyze_data.py gunicorn_config.py ./src/mongo_handler.py  .
+COPY ./src/app.py ./src/ai_analysis.py ./src/predict.py ./src/process_and_analyze_data.py gunicorn_config.py ./src/mongo_db_client.py  .
 
 # Mở port 5000 để Flask có thể truy cập
 EXPOSE 5000

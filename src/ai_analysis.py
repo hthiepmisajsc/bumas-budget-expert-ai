@@ -3,10 +3,11 @@ import os
 import json
 import logging
 from datetime import datetime
-from mongo_handler import store_ai_historical_data
+from mongo_db_client import MongoDBClient
 
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=int(os.getenv("LOG_LEVEL", logging.ERROR)),
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,12 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # Helper function for making OpenAI API calls
 def call_openai_api(
-    system_message, user_message, model="gpt-4o-mini", max_tokens=10, temperature=0
+    system_message,
+    user_message,
+    model="gpt-4o-mini",
+    max_tokens=10,
+    temperature=0,
+    response_type="text",
 ):
     try:
         response = client.chat.completions.create(
@@ -29,6 +35,8 @@ def call_openai_api(
             top_p=1,
             frequency_penalty=0,
             presence_penalty=0,
+            response_format={"type": response_type},
+            timeout=300,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -98,9 +106,9 @@ def calculate_relevance_score(text):
     result = call_openai_api(
         system_message,
         text,
-        model="ft:gpt-4o-mini-2024-07-18:personal:bumas-estimas-score-2:AAXyMp2C",
         max_tokens=1,
     )
+
     store_ai_historical_data(
         {
             "system_message": system_message,
@@ -155,7 +163,11 @@ def sub_kind_item_mapping(text, sub_kind_items, info=None):
         if sub_kind_items and len(sub_kind_items) > 0
         else ""
     )
-    info_message = "\n".join(info) + "\n" if info and len(info) > 0 else ""
+    info_message = (
+        "\n".join([f"- {key}: {value}" for key, value in info[0].items()])
+        if info and len(info) > 0
+        else ""
+    )
     system_message = (
         "Bạn là một chuyên gia lập dự toán chi thường xuyên của ngân sách nhà nước Việt Nam, với kiến thức chuyên sâu về các khoản mục trong mục lục ngân sách.\n"
         "Nhiệm vụ của bạn là phân loại nội dung sau vào khoản phù hợp trong mục lục ngân sách nhà nước.\n"
@@ -168,9 +180,10 @@ def sub_kind_item_mapping(text, sub_kind_items, info=None):
     result = call_openai_api(
         system_message,
         text,
-        model="ft:gpt-4o-mini-2024-07-18:personal:bumas-estimas-ski:AArgHQX1",
+        # model="ft:gpt-4o-mini-2024-07-18:personal:bumas-estimas-ski:AArgHQX1",
         max_tokens=30,
     )
+
     store_ai_historical_data(
         {
             "system_message": system_message,
@@ -195,7 +208,7 @@ def source_mapping(text, sources):
         "- Nguồn '12': Chi cho các khoản không thường xuyên như chế độ chính sách, tinh giản biên chế, mua sắm, sửa chữa lớn tài sản cố định, đào tạo, bồi dưỡng cán bộ, và các nhiệm vụ ngoài nguồn '13'.\n"
         "- Nguồn '13': Chi cho các khoản thường xuyên như tiền lương, tiền công, phụ cấp lương, các khoản đóng góp theo lương, mua sắm, sửa chữa thường xuyên, và các chi phí thường xuyên theo định mức.\n"
         f"{source_message}"
-        "Chỉ trả về mã số '12' hoặc '13', không trả về bất kỳ văn bản nào khác."
+        "Chỉ trả về mã số 12 hoặc 13, không trả về bất kỳ văn bản nào khác."
     )
     result = call_openai_api(system_message, text, max_tokens=15)
 
@@ -207,7 +220,52 @@ def source_mapping(text, sources):
             "timestamp": datetime.now().timestamp(),
         }
     )
-    return result
+    return result.replace("'", "").replace('"', "") if result else ""
+
+
+def parents_mapping(tasks):
+    system_message = (
+        "Bạn là một chuyên gia trong lĩnh vực lập dự toán chi thường xuyên ngân sách nhà nước Việt Nam. "
+        "Nhiệm vụ của bạn là xác định nhiệm vụ cha của các nhiệm vụ chi thường xuyên trong danh sách sau:\n"
+        "- Nhiệm vụ cha phải bao hàm hoặc là cấp trên trực tiếp của nhiệm vụ con.\n"
+        "- Không có nhiệm vụ nào trong danh sách có thể vừa là cha vừa là con của chính nó.\n"
+        "- Chỉ trả về tên nhiệm vụ cha và nhiệm vụ con đã được xác định, không trả về bất kỳ thông tin nào khác ngoài cặp cha-con.\n"
+        "- Nếu nhiệm vụ nào không xác định được cha thì không trả về"
+        "Dưới đây là danh sách nhiệm vụ:"
+    )
+    # Lấy ra mảng task["name"] từ mảng tasks và nối với nhau bởi ký tự "\n"
+    task_name = "\n".join([task["name"] for task in tasks])
+    task_name = f"{task_name}\n\n" if task_name else ""
+    task_name += 'Hãy tiến hành phân loại tất cả các nhiệm vụ trên và trả về một json dạng {"data": [{"name":"Nhiệm vụ", "parent": "Nhiệm vụ cha"}]}'
+    logger.info(f"Phân loại nhiệm vụ: {task_name}")
+    try:
+        response = call_openai_api(
+            system_message, task_name, max_tokens=15000, response_type="json_object"
+        )
+        content = json.loads(response)
+        logger.info(f"Kết quả phân loại: {content}")
+    except Exception as e:
+        logger.exception(f"Error mapping parents: {e}")
+        content = {"data": []}
+
+    if content and content.get("data", []):
+        for item in content["data"]:
+            if item.get("parent", "") and item.get("name", ""):
+                for task in tasks:
+                    if task["name"] == item["name"]:
+                        task["parent"] = item["parent"]
+                        break
+
+    if response:
+        store_ai_historical_data(
+            {
+                "system_message": system_message,
+                "user_message": task_name,
+                "result": response,
+                "timestamp": datetime.now().timestamp(),
+            }
+        )
+    return tasks
 
 
 # Identifies the parent task from a list of tasks
@@ -251,7 +309,6 @@ def parent_task_mapping(tasks, task_prediction, num_preceding_tasks=10):
     if not is_valid_parent:
         logger.debug(f"Nhiệm vụ cha '{result}' không tồn tại trong danh sách.")
         return ""
-
     store_ai_historical_data(
         {
             "system_message": system_message,
@@ -296,3 +353,17 @@ def filter_rows(df, min_score=7, keep_parent=False):
                         keep_rows.add(parent_row.index[0])
 
     return df.loc[sorted(keep_rows)]
+
+
+def store_ai_historical_data(data):
+    # return True
+    try:
+        if data:
+            mongo_client = MongoDBClient()
+            mongo_client.connect()
+            mongo_client.store_ai_historical_data(data)
+    except Exception as e:
+        logger.exception(f"Lỗi khi lưu dữ liệu AI Historical: {e}")
+    finally:
+        mongo_client.close()
+

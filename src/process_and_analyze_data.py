@@ -19,12 +19,21 @@ import camelot
 from werkzeug.utils import secure_filename
 
 from ai_analysis import calculate_relevance_score
+from bumas_task_predict import (
+    estimase_task_inference,
+    estimase_task_item_inference,
+    load_model,
+    release_model,
+)
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=int(os.getenv("LOG_LEVEL", logging.ERROR)),
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+USE_GPT = os.getenv("USE_GPT", "false").lower() == "true"
 
 # Constants
 MONEY_PATTERN = re.compile(r"^\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?$")
@@ -49,7 +58,7 @@ KEYWORDS_TO_EXCLUDE = {
     "chỉ tiêu xác định dự toán",
     "gồm",
     "gồm:",
-    "nhiệm vụ ctx"
+    "nhiệm vụ ctx",
 }
 PREFIXES_TO_EXCLUDE = {"đơn vị tính:"}
 ALLOWED_EXTENSIONS = {"xlsx", "xls", "pdf", "png", "jpg", "jpeg"}
@@ -142,6 +151,7 @@ def find_best_column_in_markdown(md_string):
     Each dictionary contains a unique 'id' and the 'name' of the text.
     """
     column_count = defaultdict(int)
+    index_count = defaultdict(int)
     valid_texts_per_column = defaultdict(list)
 
     for line in md_string.splitlines():
@@ -158,8 +168,10 @@ def find_best_column_in_markdown(md_string):
                                 uuid.uuid4()
                             ),  # Generate a unique UUID for each text item
                             "name": item,
+                            "index": index_count[col_idx],
                         }
                     )
+                index_count[col_idx] += 1
 
     if not column_count:
         logger.warning("No valid columns found in Markdown.")
@@ -174,7 +186,7 @@ def find_best_column_in_markdown(md_string):
     return valid_texts_per_column[best_column]
 
 
-def process_excel_file(file_stream):
+def process_excel_file(file_stream, file_name):
     """
     Process an Excel file and extract valid texts from its sheets via Markdown conversion.
     """
@@ -187,14 +199,21 @@ def process_excel_file(file_stream):
 
     valid_texts = []
     errors = []
+    order = 1
 
     for sheet_name, df in sheet_dict.items():
         logger.debug(f"Processing sheet: {sheet_name}")
         df_filled = df.fillna("").ffill(axis=0)
         md_string = convert_dataframe_to_markdown(df_filled)
         texts = find_best_column_in_markdown(md_string)
+        # valid_texts.extend(texts)
+        for text in texts:
+            # Add the auto-increment order, file name, and sheet name to each valid text
+            text["order"] = order
+            text["sheet_name"] = f"{sheet_name}"
+            text["file_name"] = f"{file_name}"
+            order += 1
         valid_texts.extend(texts)
-
     return valid_texts, errors
 
 
@@ -233,6 +252,7 @@ def process_pdf_file(file_stream):
             errors.append(error_msg)
 
     return valid_texts, errors
+
 
 def preprocess_image(file_stream):
     """
@@ -280,14 +300,19 @@ def process_image_file(file_stream):
 
         # Preprocess the image to improve OCR accuracy
         processed_image = preprocess_image(file_stream)
-        
+
         # Perform OCR on the image
-        extracted_text = pytesseract.image_to_string(processed_image, lang="vie", config=r'--oem 3 --psm 12', output_type=pytesseract.Output.STRING)
+        extracted_text = pytesseract.image_to_string(
+            processed_image,
+            lang="vie",
+            config=r"--oem 3 --psm 12",
+            output_type=pytesseract.Output.STRING,
+        )
 
         # logger.debug(f"Extracted text from image: {extracted_text}")
-        
+
         # Split the extracted text by lines
-        lines = extracted_text.split('\n')
+        lines = extracted_text.split("\n")
 
         # Initialize an empty list for the cleaned text
         cleaned_lines = []
@@ -303,7 +328,7 @@ def process_image_file(file_stream):
 
             # If the line starts with a lowercase letter, append it to the previous line
             if line[0].islower() and previous_line:
-                previous_line = previous_line.rstrip() + ' ' + line
+                previous_line = previous_line.rstrip() + " " + line
             else:
                 if previous_line:
                     cleaned_lines.append(previous_line)
@@ -321,21 +346,21 @@ def process_image_file(file_stream):
             # Skip empty lines
             if not line:
                 continue
-            
+
             # Format the line based on whether it contains hierarchical markers
-            if line.startswith('A') or line.startswith('I'):
+            if line.startswith("A") or line.startswith("I"):
                 # Major section headers
                 markdown_table.append(f"| {line} | {'':<30} |")
-            elif line.startswith('1') or line.startswith('2'):
+            elif line.startswith("1") or line.startswith("2"):
                 # Subsection with numbers
                 markdown_table.append(f"| {line} | {'':<30} |")
-            elif line.startswith('+'):
+            elif line.startswith("+"):
                 # Subsection with + symbols
                 markdown_table.append(f"| {'':<5} | {line} |")
             else:
                 # General text content
                 markdown_table.append(f"| {'':<5} | {line} |")
-        
+
         # logger.debug(markdown_table)
 
         # Convert the table to markdown format
@@ -361,18 +386,15 @@ def filter_texts(texts):
         text_lower = text.lower()
 
         if any(keyword.lower() == text_lower for keyword in KEYWORDS_TO_EXCLUDE):
-            logger.debug(f"Excluding text due to exact keyword match: {text}")
-            continue
-
-        if any(text_lower.startswith(prefix.lower()) for prefix in PREFIXES_TO_EXCLUDE):
-            logger.debug(f"Excluding text due to prefix match: {text}")
-            continue
-
-        if START_WORDS_REGEX.match(text):
-            logger.debug(f"Excluding text due to start words rule: {text}")
-            continue
-        if any(text.lower().startswith(keyword) for keyword in EXCLUDE_KEYWORDS):
-            continue
+            text_obj["score"] = 1
+        elif any(
+            text_lower.startswith(prefix.lower()) for prefix in PREFIXES_TO_EXCLUDE
+        ):
+            text_obj["score"] = 1
+        elif START_WORDS_REGEX.match(text):
+            text_obj["score"] = 1
+        elif any(text.lower().startswith(keyword) for keyword in EXCLUDE_KEYWORDS):
+            text_obj["score"] = 1
 
         filtered.append(text_obj)
 
@@ -405,7 +427,7 @@ def process_files(files):
                     seekable_stream = BytesIO(file_content)
 
                     if extension in {"xlsx", "xls"}:
-                        future = executor.submit(process_excel_file, seekable_stream)
+                        future = executor.submit(process_excel_file, seekable_stream, file.filename)
                     elif extension == "pdf":
                         future = executor.submit(process_pdf_file, seekable_stream)
                     elif extension in {"png", "jpg", "jpeg"}:
@@ -453,12 +475,14 @@ def process_files_and_analyze_data(files):
 
     # Filter texts based on exclusion criteria
     filtered_texts = filter_texts(valid_texts)
-    
+
     if not filtered_texts:
         logger.info("No data left after filtering texts.")
         return [], processing_errors
+    if not USE_GPT:
+        model, tokenizer, device = load_model()
 
-    def analyze_item(item):
+    def analyze_item(item, model, tokenizer, device):
         """Analyze a single text item to calculate its relevance score."""
         item_name = item.get("name", "")
         if not item_name:
@@ -467,20 +491,28 @@ def process_files_and_analyze_data(files):
 
         logger.info(f"Analyzing item: '{item_name}'.")
         try:
-            score = calculate_relevance_score(item_name)
-            # score = 1
+            if item.get("score", 0) == 0:
+                if USE_GPT:
+                    score = calculate_relevance_score
+                else:
+                    score = estimase_task_item_inference(
+                        model, tokenizer, device, item_name
+                    )
+            else:
+                score = 1
             logger.debug(f"Calculated score for '{item_name}': {score}")
-            return {"id": item.get("id", ""), "name": item_name, "score": score}
+            return {**item, "id": item.get("id", ""), "name": item_name, "score": score}
         except Exception as e:
             logger.error(f"Error calculating relevance score for '{item_name}': {e}")
-            return {"id": item.get("id", ""), "name": item_name, "score": 0}
+            return {**item, "id": item.get("id", ""), "name": item_name, "score": 0}
 
     analyzed_data = []
     analysis_errors = []
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_TASKS) as executor:
         future_to_item = {
-            executor.submit(analyze_item, item): item for item in filtered_texts
+            executor.submit(analyze_item, item, model, tokenizer, device): item
+            for item in filtered_texts
         }
 
         for future in as_completed(future_to_item):
@@ -493,6 +525,13 @@ def process_files_and_analyze_data(files):
                 analysis_errors.append(
                     f"Error analyzing item '{item.get('name', '')}': {str(e)}"
                 )
+    if not USE_GPT:
+        release_model(model)
+    # try:
+    #     analyzed_data = estimase_task_inference(filtered_texts)
+    # except Exception as e:
+    #     logger.error(f"Error analyzing : {e}")
+    #     analysis_errors.append(f"Error analyzing': {str(e)}")
 
     total_errors = processing_errors + analysis_errors
     logger.info(

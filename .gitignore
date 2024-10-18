@@ -121,5 +121,11 @@ models/
 files*
 *.tar
 *copy*
-*.json
+
 data/
+
+training_data.json
+
+bumas-task-classifier*
+
+*.json
